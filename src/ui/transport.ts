@@ -55,6 +55,7 @@ export function createTransport(playback: PlaybackController): {
   const progressFill = el('span', { class: 'transport__fill' });
   const progress = el('div', { class: 'transport__progress' }, progressFill);
   const overrideNote = el('span', { class: 'transport__note' });
+  const modeBadge = el('span', { class: 'transport__mode' });
 
   const node = el(
     'footer',
@@ -66,6 +67,7 @@ export function createTransport(playback: PlaybackController): {
       playButton,
       stopButton,
       el('div', { class: 'transport__meta' }, trackLabel, rangeLabel, overrideNote),
+      modeBadge,
       el('label', { class: 'transport__loop' }, loopToggle, ' Loop'),
       editButton,
       el('span', { class: 'transport__volume' }, '🔊', volume),
@@ -92,6 +94,11 @@ export function createTransport(playback: PlaybackController): {
     loopToggle.checked = view.loopEnabled;
     overrideNote.textContent =
       view.loopEnabled && view.loopOverridden ? 'Loop paused — you scrubbed outside it' : '';
+    modeBadge.textContent = view.mode === 'connect' ? 'rough loop' : '';
+    modeBadge.title =
+      view.mode === 'connect'
+        ? 'Playing on another Spotify device: loop points land within roughly ±500 ms.'
+        : '';
     editButton.toggleAttribute('disabled', !vibe);
     editButton.onclick = vibe
       ? () => ui.go({ name: 'editor', trackUri: vibe.trackUri, vibeId: vibe.id })

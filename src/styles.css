@@ -795,3 +795,31 @@ code {
   font-size: 14px;
   color: #ffd27d;
 }
+
+.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.choice span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.transport__mode {
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.transport__mode:empty {
+  display: none;
+}
