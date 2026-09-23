@@ -1,6 +1,7 @@
 import { currentUserIdRef, fetchProfile } from '../api/library';
 import { onApiEvent } from '../api/spotifyClient';
 import { auth } from '../auth/tokens';
+import type { PlaybackIssue } from '../player/controller';
 import { PlaybackController } from '../player/controller';
 import { db } from '../store/db';
 import { settings } from '../store/settings';
@@ -32,11 +33,18 @@ export async function startApp(root: HTMLElement): Promise<void> {
     return;
   }
 
-  if (isUnsupportedMobile()) {
+  if (isUnsupportedMobile() && settings.current.playbackMode === 'sdk') {
     showBanner(
       'mobile',
-      'Spotify’s in-browser player does not work reliably on mobile browsers. Vibe Looper is desktop-first — use Chrome, Edge, Firefox or Safari on a computer.',
+      'Spotify’s in-browser player does not work reliably on mobile browsers. Switch playback to another Spotify device (rough loop mode), or use a desktop browser.',
       'warn',
+      {
+        label: 'Use another device',
+        onClick: () => {
+          clearBanner('mobile');
+          ui.go({ name: 'settings' });
+        },
+      },
     );
   }
 
@@ -106,8 +114,18 @@ export async function startApp(root: HTMLElement): Promise<void> {
 
   const removeHotkeys = installHotkeys(playback);
 
-  wireSdkEvents(playback);
+  wireBackendEvents(playback);
   wireApiEvents();
+
+  playback.onIssue((issue: PlaybackIssue) => {
+    showBanner('playback-issue', issue.message, 'error', {
+      label: issue.kind === 'never-started' ? 'Take back & retry' : 'Try again',
+      onClick: () => {
+        clearBanner('playback-issue');
+        void issue.retry().catch(() => undefined);
+      },
+    });
+  });
 
   void fetchProfile()
     .then((profile) => {
@@ -117,7 +135,7 @@ export async function startApp(root: HTMLElement): Promise<void> {
     })
     .catch(() => undefined);
 
-  await playback.backend.connect().catch((error: unknown) => {
+  await playback.backend.start().catch((error: unknown) => {
     showBanner('sdk', error instanceof Error ? error.message : String(error), 'error');
   });
   await playback.setVolume(settings.current.defaultVolume);
@@ -130,22 +148,40 @@ export async function startApp(root: HTMLElement): Promise<void> {
   });
 }
 
-function wireSdkEvents(playback: PlaybackController): void {
-  playback.backend.on('status', (status, detail) => {
-    playback.note(`sdk: ${status}${detail ? ` — ${detail}` : ''}`);
+function wireBackendEvents(playback: PlaybackController): void {
+  const offerConnect = {
+    label: 'Use another device',
+    onClick: () => {
+      clearBanner('sdk');
+      ui.go({ name: 'settings' });
+    },
+  };
+
+  playback.on('status', (status, detail) => {
+    playback.note(`${playback.mode}: ${status}${detail ? ` — ${detail}` : ''}`);
     clearBanner('sdk');
     if (status === 'no-premium') {
       showBanner(
         'sdk',
         'Spotify Premium is required to play audio in the browser. Development Mode apps also require the app owner to hold Premium.',
         'error',
+        offerConnect,
       );
     } else if (status === 'unsupported-browser') {
       showBanner(
         'sdk',
-        'Your browser cannot run Spotify’s player (it needs Encrypted Media Extensions). Use desktop Chrome, Edge, Firefox or Safari.',
+        'Your browser cannot run Spotify’s player (it needs Encrypted Media Extensions). Play on another Spotify device instead, or use desktop Chrome, Edge, Firefox or Safari.',
         'error',
+        offerConnect,
       );
+    } else if (status === 'no-device') {
+      showBanner('sdk', detail ?? 'No Spotify device is available.', 'warn', {
+        label: 'Pick a device',
+        onClick: () => {
+          clearBanner('sdk');
+          ui.go({ name: 'settings' });
+        },
+      });
     } else if (status === 'auth-error') {
       showBanner('sdk', 'Spotify rejected the session. Reconnect from Settings.', 'error', {
         label: 'Reconnect',
@@ -163,7 +199,7 @@ function wireSdkEvents(playback: PlaybackController): void {
     }
   });
 
-  playback.backend.on('autoplayFailed', () => {
+  playback.on('autoplayFailed', () => {
     showBanner('autoplay', 'Your browser blocked audio until you interact with the page.', 'warn', {
       label: 'Enable audio',
       onClick: () => {
@@ -173,12 +209,12 @@ function wireSdkEvents(playback: PlaybackController): void {
     });
   });
 
-  playback.backend.on('playbackError', (message) => {
+  playback.on('playbackError', (message) => {
     playback.note(`playback error: ${message}`);
     toast(message, 'error');
   });
 
-  playback.backend.on('playbackMoved', () => {
+  playback.on('playbackMoved', () => {
     showBanner('moved', 'Playback moved to another device.', 'warn', {
       label: 'Take it back',
       onClick: async () => {

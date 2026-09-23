@@ -43,6 +43,7 @@ function sanitise(settings: Settings): Settings {
     seekLookaheadMs: Math.round(clamp(settings.seekLookaheadMs, 0, 600)),
     defaultVolume: clamp(settings.defaultVolume, 0, 1),
     fadeMs: Math.round(clamp(settings.fadeMs, 0, 2000)),
+    connectPollMs: Math.round(clamp(settings.connectPollMs, 500, 5000)),
   };
 }
 

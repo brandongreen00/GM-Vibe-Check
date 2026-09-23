@@ -1,29 +1,17 @@
 import { apiRequest } from '../api/spotifyClient';
 import { auth } from '../auth/tokens';
-import type { PlaybackBackend } from './backend';
+import {
+  BaseBackend,
+  delay,
+  needsDeviceRecovery,
+  type ApiFn,
+  type PlaybackBackend,
+} from './backend';
 import type { PlaybackSnapshot } from './loopEngine';
 
 const SDK_SRC = 'https://sdk.scdn.co/spotify-player.js';
-
-export type SdkStatus =
-  | 'idle'
-  | 'loading'
-  | 'connecting'
-  | 'ready'
-  | 'not-ready'
-  | 'no-premium'
-  | 'unsupported-browser'
-  | 'auth-error'
-  | 'error';
-
-export interface SdkEvents {
-  status: (status: SdkStatus, detail?: string) => void;
-  /** The browser blocked programmatic playback until a user gesture activates the element. */
-  autoplayFailed: () => void;
-  playbackError: (message: string) => void;
-  /** Playback moved to another Spotify device — our device is no longer active. */
-  playbackMoved: () => void;
-}
+/** Spotify needs a moment to accept the device before it will start playback on it. */
+const TRANSFER_SETTLE_MS = 400;
 
 let sdkLoader: Promise<void> | null = null;
 
@@ -46,7 +34,12 @@ export function loadSpotifySdk(): Promise<void> {
   return sdkLoader;
 }
 
-export class WebPlaybackBackend implements PlaybackBackend {
+export interface WebPlaybackOptions {
+  api?: ApiFn;
+  createPlayer?: (init: Spotify.PlayerInit) => Spotify.Player;
+}
+
+export class WebPlaybackBackend extends BaseBackend implements PlaybackBackend {
   readonly id = 'web-playback-sdk' as const;
 
   private player: Spotify.Player | null = null;
@@ -56,15 +49,24 @@ export class WebPlaybackBackend implements PlaybackBackend {
   private repeatSetForUri: string | null = null;
   private activated = false;
   private hadState = false;
-  private stateListeners = new Set<
-    (snapshot: PlaybackSnapshot, raw: Spotify.PlaybackState | null) => void
-  >();
-  private handlers: Partial<SdkEvents> = {};
+  private readonly api: ApiFn;
+  private readonly createPlayer: (init: Spotify.PlayerInit) => Spotify.Player;
+  /** Tests inject a player, and must not pull in Spotify's real script. */
+  private readonly needsSdkScript: boolean;
 
-  status: SdkStatus = 'idle';
+  constructor(options: WebPlaybackOptions = {}) {
+    super();
+    this.api = options.api ?? apiRequest;
+    this.needsSdkScript = options.createPlayer === undefined;
+    this.createPlayer = options.createPlayer ?? ((init) => new window.Spotify.Player(init));
+  }
 
   get isReady(): boolean {
     return this.ready && this.deviceId !== null;
+  }
+
+  get deviceLabel(): string | null {
+    return this.deviceId ? `Vibe Looper (this tab) · ${this.deviceId}` : null;
   }
 
   get currentDeviceId(): string | null {
@@ -75,25 +77,11 @@ export class WebPlaybackBackend implements PlaybackBackend {
     return this.lastState?.track_window.current_track.uri ?? null;
   }
 
-  on<K extends keyof SdkEvents>(event: K, handler: SdkEvents[K]): void {
-    this.handlers[event] = handler;
-  }
-
-  onState(cb: (snapshot: PlaybackSnapshot, raw: Spotify.PlaybackState | null) => void): () => void {
-    this.stateListeners.add(cb);
-    return () => this.stateListeners.delete(cb);
-  }
-
-  private setStatus(status: SdkStatus, detail?: string): void {
-    this.status = status;
-    this.handlers.status?.(status, detail);
-  }
-
-  async connect(): Promise<void> {
+  async start(): Promise<void> {
     this.setStatus('loading');
-    await loadSpotifySdk();
+    if (this.needsSdkScript) await loadSpotifySdk();
 
-    const player = new window.Spotify.Player({
+    const player = this.createPlayer({
       name: 'Vibe Looper',
       // The SDK calls this on connect and whenever the token expires (hourly at most).
       getOAuthToken: (cb) => {
@@ -113,6 +101,8 @@ export class WebPlaybackBackend implements PlaybackBackend {
       void this.transferPlayback();
     });
     player.addListener('not_ready', () => {
+      // Keep the device id: Spotify usually brings the same device back, and `play()`
+      // re-transfers before giving up.
       this.ready = false;
       this.setStatus('not-ready', 'The Vibe Looper device went offline.');
     });
@@ -122,13 +112,13 @@ export class WebPlaybackBackend implements PlaybackBackend {
         // an idle device, not a takeover, so it must not raise the banner.
         this.lastState = null;
         this.repeatSetForUri = null;
-        this.emitState(null);
+        this.emitState(idleSnapshot());
         if (this.hadState) this.handlers.playbackMoved?.();
         return;
       }
       this.hadState = true;
       this.lastState = state;
-      this.emitState(state);
+      this.emitState(toSnapshot(state), state);
     });
     player.addListener('autoplay_failed', () => this.handlers.autoplayFailed?.());
     player.addListener('initialization_error', ({ message }) =>
@@ -145,23 +135,10 @@ export class WebPlaybackBackend implements PlaybackBackend {
     if (!connected) this.setStatus('error', 'Spotify refused the player connection.');
   }
 
-  private emitState(state: Spotify.PlaybackState | null): void {
-    const snapshot: PlaybackSnapshot = state
-      ? {
-          positionMs: state.position,
-          atMs: performance.now(),
-          paused: state.paused,
-          durationMs: state.duration,
-          trackUri: state.track_window.current_track.uri,
-        }
-      : { positionMs: 0, atMs: performance.now(), paused: true, durationMs: 0, trackUri: null };
-    for (const cb of this.stateListeners) cb(snapshot, state);
-  }
-
   /** Makes this tab the active Connect device without starting playback. */
   async transferPlayback(): Promise<void> {
     if (!this.deviceId) return;
-    await apiRequest('/me/player', {
+    await this.api('/me/player', {
       method: 'PUT',
       body: { device_ids: [this.deviceId], play: false },
       tolerate403: true,
@@ -182,17 +159,32 @@ export class WebPlaybackBackend implements PlaybackBackend {
     if (!this.deviceId) throw new Error('The Vibe Looper player is not ready yet.');
 
     // Re-using an already loaded track is both faster and one fewer Web API call.
-    if (this.currentTrackUri === uri) {
+    if (this.currentTrackUri === uri && this.ready) {
       await this.seek(positionMs);
       await this.resume();
       return;
     }
 
-    await apiRequest(`/me/player/play?device_id=${encodeURIComponent(this.deviceId)}`, {
+    try {
+      await this.sendPlay(uri, positionMs);
+    } catch (error) {
+      if (!needsDeviceRecovery(error)) throw error;
+      // Spotify drops an idle web player out of the active-device slot — the usual
+      // reason a second vibe refuses to start. Re-claim the slot and try once more.
+      this.handlers.status?.('connecting', 'Re-claiming the Vibe Looper device…');
+      await this.transferPlayback();
+      await delay(TRANSFER_SETTLE_MS);
+      await this.sendPlay(uri, positionMs);
+      this.setStatus('ready');
+    }
+    await this.ensureRepeatTrack(uri);
+  }
+
+  private async sendPlay(uri: string, positionMs: number): Promise<void> {
+    await this.api(`/me/player/play?device_id=${encodeURIComponent(this.deviceId ?? '')}`, {
       method: 'PUT',
       body: { uris: [uri], position_ms: Math.round(positionMs) },
     });
-    await this.ensureRepeatTrack(uri);
   }
 
   /**
@@ -202,10 +194,10 @@ export class WebPlaybackBackend implements PlaybackBackend {
   private async ensureRepeatTrack(uri: string): Promise<void> {
     if (!this.deviceId || this.repeatSetForUri === uri) return;
     this.repeatSetForUri = uri;
-    await apiRequest(
-      `/me/player/repeat?state=track&device_id=${encodeURIComponent(this.deviceId)}`,
-      { method: 'PUT', tolerate403: true },
-    ).catch(() => {
+    await this.api(`/me/player/repeat?state=track&device_id=${encodeURIComponent(this.deviceId)}`, {
+      method: 'PUT',
+      tolerate403: true,
+    }).catch(() => {
       this.repeatSetForUri = null;
     });
   }
@@ -232,7 +224,23 @@ export class WebPlaybackBackend implements PlaybackBackend {
 
   shutdown(): void {
     this.player?.disconnect();
+    this.player = null;
     this.ready = false;
     this.deviceId = null;
+    this.stateListeners.clear();
   }
+}
+
+function toSnapshot(state: Spotify.PlaybackState): PlaybackSnapshot {
+  return {
+    positionMs: state.position,
+    atMs: performance.now(),
+    paused: state.paused,
+    durationMs: state.duration,
+    trackUri: state.track_window.current_track.uri,
+  };
+}
+
+function idleSnapshot(): PlaybackSnapshot {
+  return { positionMs: 0, atMs: performance.now(), paused: true, durationMs: 0, trackUri: null };
 }

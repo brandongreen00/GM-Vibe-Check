@@ -151,7 +151,7 @@ export function renderOnboarding(root: HTMLElement, initialError?: string): void
           el(
             'li',
             {},
-            'Playback happens in this browser tab and needs a desktop browser with Encrypted Media Extensions: Chrome, Edge, Firefox or Safari. Mobile browsers are not supported.',
+            'Playback in this browser tab needs a desktop browser with Encrypted Media Extensions: Chrome, Edge, Firefox or Safari. On a phone or tablet, switch Settings \u2192 Where audio plays to another Spotify device — Vibe Looper then drives your phone\u2019s Spotify app instead, with slightly rougher loops.',
           ),
         ),
       ),

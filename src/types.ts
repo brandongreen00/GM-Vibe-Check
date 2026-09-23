@@ -12,6 +12,9 @@ export interface AuthState {
 
 export type TapActiveBehaviour = 'toggle' | 'stop';
 
+/** 'sdk' plays in this browser tab; 'connect' drives another Spotify device. */
+export type PlaybackMode = 'sdk' | 'connect';
+
 export interface Settings {
   /** Compensates for seek latency at the loop boundary. 0..600 */
   seekLookaheadMs: number;
@@ -19,6 +22,11 @@ export interface Settings {
   fadeOnSwitch: boolean;
   fadeMs: number;
   tapActiveBehaviour: TapActiveBehaviour;
+  playbackMode: PlaybackMode;
+  /** Remembered Connect target, so a session picks up where it left off. */
+  connectDeviceId?: string;
+  /** How often rough loop mode polls `GET /me/player`. Every poll costs quota. */
+  connectPollMs: number;
 }
 
 export interface TrackRef {
@@ -72,6 +80,8 @@ export const DEFAULT_SETTINGS: Settings = {
   fadeOnSwitch: true,
   fadeMs: 400,
   tapActiveBehaviour: 'toggle',
+  playbackMode: 'sdk',
+  connectPollMs: 1000,
 };
 
 export const SCOPES = [

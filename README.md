@@ -20,8 +20,19 @@ and when to seek.
    Spotify's dashboard and paste its Client ID into Vibe Looper, where it is stored only
    in your browser's `localStorage`.
 
-Vibe Looper is **desktop-first**: Chrome, Edge, Firefox or Safari on a computer. Mobile
-browsers cannot run Spotify's player reliably and the app says so when it detects one.
+Vibe Looper can play audio two ways, switchable in **Settings → Where audio plays**:
+
+|                          | **This browser tab** (default)     | **Another Spotify device**                  |
+| ------------------------ | ---------------------------------- | ------------------------------------------- |
+| How                      | Spotify Web Playback SDK           | Spotify Connect, over the Web API           |
+| Loop accuracy            | tight, ~±150 ms                    | rough, ~±500 ms                             |
+| Needs                    | desktop Chrome/Edge/Firefox/Safari | anything, including phones                  |
+| Quota cost while looping | none                               | one poll per second, plus one call per loop |
+
+In-browser playback is the better experience, so it stays the default. Use **another
+device** on a phone or tablet, or if your browser cannot run Spotify's player — the audio
+then comes out of your phone's Spotify app, your desktop client or a speaker, and Vibe
+Looper just drives it.
 
 ## Setting up your Spotify app (about two minutes)
 
@@ -59,8 +70,21 @@ app, one of those three rules is being broken — almost always the trailing sla
 - **Hotkeys** → `1`–`9`, `0`, then `q w e r t y u i o p` map to the Vibes in the current
   list in order, overridable per Vibe. <kbd>Space</kbd> pauses, <kbd>Esc</kbd> stops.
   Hotkeys are disabled while you are typing.
-- **Settings** → seek lookahead, fade between Vibes, JSON export/import, disconnect,
-  reset, and a diagnostics panel that logs every loop seek.
+- **Settings** → where audio plays, seek lookahead, fade between Vibes, JSON
+  export/import, disconnect, reset, and a diagnostics panel that logs every loop seek.
+
+### Rough loop mode (playing on another device)
+
+Spotify pushes no playback state for remote devices, so Vibe Looper polls
+`GET /me/player` (once a second by default, adjustable 0.5–5 s in Settings) and
+extrapolates the playhead between polls. Loop boundaries therefore land within roughly
+±500 ms instead of ±150 ms, and every boundary spends a `PUT /me/player/seek`.
+
+Budget for it: a one-second poll is about 3,600 calls an hour on top of one call per
+loop — a 10-second loop running for an hour adds another 360. That quota is shared
+across your whole Spotify developer account, so raise the poll interval if you hit the
+`QUOTA_EXCEEDED` banner. Fades are skipped in this mode (each ramp step would be another
+call), and remote volume is throttled; some devices refuse remote volume entirely.
 
 ### If loops overshoot or cut early
 
@@ -70,6 +94,15 @@ so the loop engine seeks slightly _before_ the end point. That margin is the
 
 - loops **overshoot** the end → raise it;
 - loops **cut early** → lower it.
+
+### If a vibe refuses to start
+
+Spotify drops an idle web player out of the active-device slot, after which
+`PUT /me/player/play` for it fails. Vibe Looper handles this by re-claiming the device
+and retrying once; if it still cannot start, a banner explains why and offers a retry
+rather than leaving you with a button that does nothing. If a play request is accepted
+but nothing actually starts within five seconds — usually because another device grabbed
+playback — the same banner offers **Take back & retry**.
 
 ## What Spotify's Development Mode does and does not allow
 
@@ -113,7 +146,7 @@ Register `http://127.0.0.1:5173/` as a second Redirect URI in your Spotify app.
 Do not use `localhost` — Spotify rejects it.
 
 ```bash
-npm test           # Vitest: loop engine + removed-endpoint guard
+npm test           # Vitest: loop engine, backends, removed-endpoint guard
 npm run lint
 npm run build      # typecheck, bundle to dist/, copy index.html to 404.html
 ```
@@ -145,9 +178,10 @@ The engine is pure — its inputs are state snapshots and a clock, its output is
 to X" command — so `tests/loopEngine.test.ts` drives ten minutes of looping with a fake
 clock and asserts no drift, no overshoot beyond the lookahead, and no double seeks.
 
-The playback layer sits behind a `PlaybackBackend` interface
-(`src/player/backend.ts`), so a Spotify Connect fallback that controls your phone or
-desktop client can be added later without touching the UI.
+Both playback routes sit behind the `PlaybackBackend` interface
+(`src/player/backend.ts`): `src/player/sdk.ts` plays in this tab, `src/player/connect.ts`
+drives another device by polling and seeking over the Web API. The loop engine, the
+soundboard and the editor are identical either way — only the precision differs.
 
 ## Privacy
 

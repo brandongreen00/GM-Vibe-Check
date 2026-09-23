@@ -56,6 +56,21 @@ export function toTrackRef(track: ApiTrack): TrackRef {
   };
 }
 
+/** The player reports tracks in a slightly different shape than the Web API does. */
+export function trackRefFromPlayerTrack(track: Spotify.Track): TrackRef {
+  return {
+    uri: track.uri,
+    id: track.id ?? trackIdFromUri(track.uri),
+    name: track.name,
+    artists: track.artists.map((artist) => artist.name),
+    albumName: track.album?.name ?? '',
+    albumArtUrl: pickArt(track.album?.images),
+    durationMs: track.duration_ms,
+    isPlayable: track.is_playable,
+    cachedAt: Date.now(),
+  };
+}
+
 /**
  * `GET /v1/tracks?ids=` was removed in Feb 2026, so re-hydration is one track at a
  * time. Anything already in IndexedDB is reused unless `force` is set.
